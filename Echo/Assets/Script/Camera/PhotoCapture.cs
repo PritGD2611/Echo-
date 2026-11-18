@@ -5,55 +5,56 @@ using UnityEngine.InputSystem;
 
 public class PhotoCapture : MonoBehaviour
 {
-    [Header("Camera Mode Settings")]
-    [SerializeField] private GameObject cameraCanvas; // Drag 'Camera - Canvas' here
-    [SerializeField] private GameObject journalPanel; // Optional: Drag 'MainPanel(BG)' here so camera won't shoot while journal is open
-    private bool isCameraModeActive = false;
+    [Header("Camera Equipment")]
+    [SerializeField] private GameObject cameraModel3D;       // Drag your 3D Camera model here
+    [SerializeField] private Camera viewfinderCamera;       // Drag the ViewfinderCamera here
+    [SerializeField] private GameObject journalPanel;       // Drag MainPanel(BG) here
 
-    [Header("Photo Taker")]
-    [SerializeField] private Image photoDisplayArea;  // Drag 'PhotoDisplayArea' here
-    [SerializeField] private GameObject photoFrame;   // Drag 'PhotoFrameBG' here
-    private Texture2D screenCapture;
-    private bool viewingPhoto;
+    [Header("UI & Polaroids")]
+    [SerializeField] private GameObject cameraCanvas;       // UI overlay (lines, stickers, etc.)
+    [SerializeField] private Image photoDisplayArea;
+    [SerializeField] private GameObject photoFrame;
 
-    [Header("Flash Effects")]
+    [Header("Flash & Fader")]
     [SerializeField] private GameObject cameraFlash;
     [SerializeField] private float flashTime = 0.2f;
-
-    [Header("Photo Fader Effects")]
     [SerializeField] private Animator fadingAnimation;
+
+    private bool isCameraEquipped = false;
+    private bool viewingPhoto = false;
+    private Texture2D screenCapture;
 
     void Start()
     {
         screenCapture = new Texture2D(Screen.width, Screen.height, TextureFormat.RGB24, false);
 
-        // Start with Camera Mode and PhotoFrameBG turned off
-        isCameraModeActive = false;
+        // Start unequipped
+        SetCameraEquipped(false);
         if (photoFrame != null) photoFrame.SetActive(false);
-        if (cameraCanvas != null) cameraCanvas.SetActive(false);
     }
 
     void Update()
     {
-        // Block camera inputs if the Journal is currently open
-        if (journalPanel != null && journalPanel.activeInHierarchy)
-            return;
-
-        // 1. Toggle Camera Mode ON/OFF when pressing 'P'
+        // 1. Toggle Camera Equip state with 'P'
         if (Keyboard.current != null && Keyboard.current.pKey.wasPressedThisFrame)
         {
-            ToggleCameraMode();
+            // Don't equip/unequip if journal is open
+            if (journalPanel == null || !journalPanel.activeInHierarchy)
+            {
+                SetCameraEquipped(!isCameraEquipped);
+            }
         }
 
-        // 2. Only allow Left-Click photo capture if Camera Mode is ACTIVE
-        if (!isCameraModeActive)
-            return;
+        if (!isCameraEquipped) return;
 
+        // Block taking photos if journal is open
+        if (journalPanel != null && journalPanel.activeInHierarchy) return;
+
+        // 2. Left Click to Take Photo or Dismiss Polaroid
         if (Mouse.current != null && Mouse.current.leftButton.wasPressedThisFrame)
         {
             if (!viewingPhoto)
             {
-                viewingPhoto = true;
                 StartCoroutine(CapturePhoto());
             }
             else
@@ -63,22 +64,22 @@ public class PhotoCapture : MonoBehaviour
         }
     }
 
-    private void ToggleCameraMode()
+    private void SetCameraEquipped(bool equipped)
     {
-        isCameraModeActive = !isCameraModeActive;
+        isCameraEquipped = equipped;
 
-        if (cameraCanvas != null)
-            cameraCanvas.SetActive(isCameraModeActive);
+        if (cameraModel3D != null) cameraModel3D.SetActive(equipped);
+        if (viewfinderCamera != null) viewfinderCamera.gameObject.SetActive(equipped); // Fixed here!
+        if (cameraCanvas != null) cameraCanvas.SetActive(equipped);
 
-        // If the player turns off Camera Mode while looking at a photo, clean it up
-        if (!isCameraModeActive)
+        if (!equipped)
         {
             StopAllCoroutines();
             if (cameraFlash != null) cameraFlash.SetActive(false);
             RemovePhoto();
         }
 
-        Debug.Log("Camera Mode Active: " + isCameraModeActive);
+        Debug.Log("Camera Equipped: " + isCameraEquipped);
     }
 
     IEnumerator CapturePhoto()
@@ -90,9 +91,20 @@ public class PhotoCapture : MonoBehaviour
 
         yield return new WaitForEndOfFrame();
 
-        Rect regionToRead = new Rect(0, 0, Screen.width, Screen.height);
-        screenCapture.ReadPixels(regionToRead, 0, 0, false);
-        screenCapture.Apply();
+        // 1. Get the Render Texture from the Viewfinder Camera
+        RenderTexture activeRT = RenderTexture.active;
+        RenderTexture.active = viewfinderCamera.targetTexture;
+
+        // 2. Render what the viewfinder sees into a new Texture2D
+        Texture2D camTexture = new Texture2D(viewfinderCamera.targetTexture.width, viewfinderCamera.targetTexture.height, TextureFormat.RGB24, false);
+        camTexture.ReadPixels(new Rect(0, 0, viewfinderCamera.targetTexture.width, viewfinderCamera.targetTexture.height), 0, 0);
+        camTexture.Apply();
+
+        // 3. Restore previous render texture
+        RenderTexture.active = activeRT;
+
+        // 4. Assign this captured viewfinder texture to our screenCapture variable
+        screenCapture = camTexture;
 
         ShowPhoto();
 
@@ -110,9 +122,9 @@ public class PhotoCapture : MonoBehaviour
             100.0f
         );
 
-        photoDisplayArea.sprite = photoSprite;
-        photoFrame.SetActive(true);
-        fadingAnimation.Play("PhotoFade");
+        if (photoDisplayArea != null) photoDisplayArea.sprite = photoSprite;
+        if (photoFrame != null) photoFrame.SetActive(true);
+        if (fadingAnimation != null) fadingAnimation.Play("PhotoFade");
     }
 
     void RemovePhoto()
