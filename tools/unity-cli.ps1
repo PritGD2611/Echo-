@@ -142,7 +142,7 @@ function Assert-ProjectUnlocked {
 
 # ---------------------------------------------------------- live bridge
 
-$script:LiveAllowedMethods = @('Ping', 'Info', 'ValidateLive', 'Refresh', 'EchoSceneBuilder.AddColliders')
+$script:LiveAllowedMethods = @('Ping', 'Info', 'ValidateLive', 'Refresh', 'EchoSceneBuilder.AddColliders', 'EchoSceneBuilder.ApplySurfaceDetail', 'EchoSceneBuilder.RenderSurfaceCheck', 'EchoSceneBuilder.RenderMainPreview', 'EchoSceneBuilder.VerifyChanges')
 
 function Test-LiveEditor { [bool](Get-UnityProcessForProject) }
 
@@ -567,6 +567,10 @@ switch ($Command.ToLowerInvariant()) {
         exit 2
     }
 }
+
+
+
+
 
 
 

@@ -3,6 +3,8 @@
 //  - per-instance projection rotation (each tree/rock gets different tiling)
 //  - low-frequency domain warp (bends straight tile edges)
 //  - two-scale detail blend + macro noise variation (breaks visible repeats)
+//  - height-map driven vertex displacement (real geometry relief)
+//  - parallax occlusion mapping for per-pixel depth (fake geometry)
 Shader "Echo/Forest Triplanar"
 {
     Properties
@@ -10,6 +12,7 @@ Shader "Echo/Forest Triplanar"
         [MainTexture] _BaseMap("Albedo", 2D) = "white" {}
         [Normal] _NormalMap("Normal", 2D) = "bump" {}
         _ArmMap("ARM (AO / Roughness / Metallic)", 2D) = "white" {}
+        _DispMap("Height / Displacement", 2D) = "gray" {}
         _NoiseMap("Macro Noise (RG = warp, B = macro)", 2D) = "gray" {}
         [MainColor] _BaseColor("Tint", Color) = (1, 1, 1, 1)
 
@@ -26,6 +29,10 @@ Shader "Echo/Forest Triplanar"
         _MacroStrength("Macro Variation", Range(0, 0.6)) = 0.25
         _Warp("Domain Warp (meters)", Range(0, 2)) = 0.4
         _InstanceVariation("Per-Instance Variation", Range(0, 1)) = 1
+
+        _DispHeight("Vertex Displacement (meters)", Range(0, 1)) = 0
+        _Parallax("Parallax Depth (meters)", Range(0, 0.6)) = 0
+        [Toggle(_POM)] _PomOn("Parallax Occlusion Mapping", Float) = 0
     }
 
     SubShader
@@ -55,11 +62,14 @@ Shader "Echo/Forest Triplanar"
             float _MacroStrength;
             float _Warp;
             float _InstanceVariation;
+            float _DispHeight;
+            float _Parallax;
         CBUFFER_END
 
         TEXTURE2D(_BaseMap);    SAMPLER(sampler_BaseMap);
         TEXTURE2D(_NormalMap);  SAMPLER(sampler_NormalMap);
         TEXTURE2D(_ArmMap);     SAMPLER(sampler_ArmMap);
+        TEXTURE2D(_DispMap);    SAMPLER(sampler_DispMap);
         TEXTURE2D(_NoiseMap);   SAMPLER(sampler_NoiseMap);
 
         // ------------------------------------------------------------ noise
@@ -114,6 +124,85 @@ Shader "Echo/Forest Triplanar"
 
             normalWS = normalize(normalWS + tangentPerturb);
         }
+
+        // ------------------------------------------------- height / relief
+
+        // Vertex shaders have no derivatives, so the height lookup needs an
+        // explicit mip level there.
+        float SampleHeightVertex(float3 p, float3 weights, float scale)
+        {
+            float x = SAMPLE_TEXTURE2D_LOD(_DispMap, sampler_DispMap, p.yz * scale, 0).r;
+            float y = SAMPLE_TEXTURE2D_LOD(_DispMap, sampler_DispMap, p.xz * scale, 0).r;
+            float z = SAMPLE_TEXTURE2D_LOD(_DispMap, sampler_DispMap, p.xy * scale, 0).r;
+            return x * weights.x + y * weights.y + z * weights.z;
+        }
+
+        float3 HeightWeights(float3 normalWS)
+        {
+            float3 w = pow(abs(normalWS), 4.0);
+            return w / max(w.x + w.y + w.z, 1e-4);
+        }
+
+        // Real geometry: push the mesh vertices along the world normal so the
+        // terrain silhouette follows the height map. Applied in every pass
+        // (lit, shadow, depth) so lighting and shadows stay consistent.
+        float3 ApplyVertexDisplacement(float3 positionWS, float3 normalWS)
+        {
+            if (_DispHeight <= 0.0001) return positionWS;
+
+            float angle = Hash13(floor(InstanceOrigin() * 0.731)) * 6.2831853 * _InstanceVariation;
+            float3 p = RotateY(positionWS, angle);
+            float3 weights = HeightWeights(RotateY(normalWS, angle));
+
+            float height = SampleHeightVertex(p, weights, _BaseScale);
+            return positionWS + normalWS * ((height - 0.5) * _DispHeight);
+        }
+
+        // Fake geometry: parallax occlusion march on the dominant projection
+        // axis, returning the world-space offset to apply before texturing.
+        float3 ParallaxOffset(float3 p, float3 viewDirRotated, float3 weights, float scale)
+        {
+            int axis = 1;
+            if (weights.x > weights.y && weights.x > weights.z) axis = 0;
+            else if (weights.z > weights.y && weights.z > weights.x) axis = 2;
+
+            float2 uv = axis == 1 ? p.xz : (axis == 0 ? p.yz : p.xy);
+            float2 dir = axis == 1 ? viewDirRotated.xz : (axis == 0 ? viewDirRotated.yz : viewDirRotated.xy);
+            float vAxis = axis == 1 ? viewDirRotated.y : (axis == 0 ? viewDirRotated.x : viewDirRotated.z);
+
+            // Ray length through the height range, clamped at grazing angles.
+            float2 marchDir = -dir / max(abs(vAxis), 0.2) * _Parallax;
+
+            const int steps = 8;
+            float layerDepth = 1.0 / steps;
+            float2 delta = marchDir / steps;
+
+            float depth = 0.0;
+            float height = SAMPLE_TEXTURE2D(_DispMap, sampler_DispMap, uv * scale).r;
+
+            [unroll]
+            for (int i = 0; i < steps; i++)
+            {
+                if (depth >= height) break;
+                uv += delta;
+                depth += layerDepth;
+                height = SAMPLE_TEXTURE2D(_DispMap, sampler_DispMap, uv * scale).r;
+            }
+
+            // One refinement step against the previous layer.
+            float2 previous = uv - delta;
+            float h1 = SAMPLE_TEXTURE2D(_DispMap, sampler_DispMap, previous * scale).r;
+            float after = (depth - h1) / max(depth - height + layerDepth, 1e-4);
+            uv = lerp(previous, uv, saturate(after));
+
+            float2 offset = uv - (axis == 1 ? p.xz : (axis == 0 ? p.yz : p.xy));
+
+            float3 result = 0;
+            if (axis == 1) result.xz = offset;
+            else if (axis == 0) result.yz = offset;
+            else result.xy = offset;
+            return result;
+        }
         ENDHLSL
 
         // ------------------------------------------------------------- lit
@@ -132,6 +221,7 @@ Shader "Echo/Forest Triplanar"
             #pragma fragment Frag
 
             #pragma shader_feature_local _TWO_SCALE
+            #pragma shader_feature_local _POM
             #pragma multi_compile _ _MAIN_LIGHT_SHADOWS _MAIN_LIGHT_SHADOWS_CASCADE _MAIN_LIGHT_SHADOWS_SCREEN
             #pragma multi_compile _ _ADDITIONAL_LIGHTS_VERTEX _ADDITIONAL_LIGHTS
             #pragma multi_compile_fragment _ _ADDITIONAL_LIGHT_SHADOWS
@@ -173,10 +263,12 @@ Shader "Echo/Forest Triplanar"
                 VertexPositionInputs pos = GetVertexPositionInputs(input.positionOS.xyz);
                 VertexNormalInputs nrm = GetVertexNormalInputs(input.normalOS);
 
-                o.positionCS = pos.positionCS;
-                o.positionWS = pos.positionWS;
+                float3 positionWS = ApplyVertexDisplacement(pos.positionWS, nrm.normalWS);
+
+                o.positionCS = TransformWorldToHClip(positionWS);
+                o.positionWS = positionWS;
                 o.normalWS = nrm.normalWS;
-                o.fogFactor = ComputeFogFactor(pos.positionCS.z);
+                o.fogFactor = ComputeFogFactor(o.positionCS.z);
                 return o;
             }
 
@@ -207,6 +299,14 @@ Shader "Echo/Forest Triplanar"
                 float macro = saturate(noise.b * 0.65 + macroBig * 0.35);
 
                 float scaleA = _BaseScale;
+
+                #ifdef _POM
+                    // Per-pixel depth from the height map: offsets every texture
+                    // lookup so grooves and cracks read as real geometry.
+                    float3 viewDirWS = GetWorldSpaceNormalizeViewDir(input.positionWS);
+                    float3 viewRotated = RotateY(viewDirWS, angle);
+                    p += ParallaxOffset(p, viewRotated, weights, scaleA);
+                #endif
 
                 #ifdef _TWO_SCALE
                     half3 baseA = SampleBase(p, weights, scaleA);
@@ -316,6 +416,7 @@ Shader "Echo/Forest Triplanar"
 
                 float3 positionWS = TransformObjectToWorld(input.positionOS.xyz);
                 float3 normalWS = TransformObjectToWorldNormal(input.normalOS);
+                positionWS = ApplyVertexDisplacement(positionWS, normalWS);
                 o.positionCS = GetShadowPositionHClip(positionWS, normalWS);
                 return o;
             }
@@ -346,6 +447,7 @@ Shader "Echo/Forest Triplanar"
             struct Attributes
             {
                 float4 positionOS : POSITION;
+                float3 normalOS : NORMAL;
                 UNITY_VERTEX_INPUT_INSTANCE_ID
             };
 
@@ -360,7 +462,11 @@ Shader "Echo/Forest Triplanar"
                 Varyings o = (Varyings)0;
                 UNITY_SETUP_INSTANCE_ID(input);
                 UNITY_TRANSFER_INSTANCE_ID(input, o);
-                o.positionCS = TransformObjectToHClip(input.positionOS.xyz);
+
+                float3 positionWS = TransformObjectToWorld(input.positionOS.xyz);
+                float3 normalWS = TransformObjectToWorldNormal(input.normalOS);
+                positionWS = ApplyVertexDisplacement(positionWS, normalWS);
+                o.positionCS = TransformWorldToHClip(positionWS);
                 return o;
             }
 

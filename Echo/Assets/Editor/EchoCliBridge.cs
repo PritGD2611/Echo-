@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -25,7 +25,11 @@ public static class EchoCliBridge
         nameof(EchoCli.Info),
         nameof(EchoCli.ValidateLive),
         nameof(EchoCli.Refresh),
-        "EchoSceneBuilder.AddColliders"
+        "EchoSceneBuilder.AddColliders",
+        "EchoSceneBuilder.ApplySurfaceDetail",
+        "EchoSceneBuilder.RenderSurfaceCheck",
+        "EchoSceneBuilder.RenderMainPreview",
+        "EchoSceneBuilder.VerifyChanges"
     };
 
     private static double _lastPoll;
@@ -166,6 +170,10 @@ public static class EchoCliBridge
             case nameof(EchoCli.ValidateLive): EchoCli.ValidateLive(); break;
             case nameof(EchoCli.Refresh): EchoCli.Refresh(); break;
             case "EchoSceneBuilder.AddColliders": EchoSceneBuilder.AddColliders(); break;
+            case "EchoSceneBuilder.ApplySurfaceDetail": EchoSceneBuilder.ApplySurfaceDetail(); break;
+            case "EchoSceneBuilder.RenderSurfaceCheck": EchoSceneBuilder.RenderSurfaceCheck(); break;
+            case "EchoSceneBuilder.RenderMainPreview": EchoSceneBuilder.RenderMainPreview(); break;
+            case "EchoSceneBuilder.VerifyChanges": EchoSceneBuilder.VerifyChanges(); break;
             default: throw new InvalidOperationException("Unhandled method: " + method);
         }
     }
@@ -176,3 +184,7 @@ public static class EchoCliBridge
             Output.Add(condition);
     }
 }
+
+
+
+
