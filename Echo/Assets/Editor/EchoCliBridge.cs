@@ -24,7 +24,8 @@ public static class EchoCliBridge
         nameof(EchoCli.Ping),
         nameof(EchoCli.Info),
         nameof(EchoCli.ValidateLive),
-        nameof(EchoCli.Refresh)
+        nameof(EchoCli.Refresh),
+        "EchoSceneBuilder.AddColliders"
     };
 
     private static double _lastPoll;
@@ -164,6 +165,7 @@ public static class EchoCliBridge
             case nameof(EchoCli.Info): EchoCli.Info(); break;
             case nameof(EchoCli.ValidateLive): EchoCli.ValidateLive(); break;
             case nameof(EchoCli.Refresh): EchoCli.Refresh(); break;
+            case "EchoSceneBuilder.AddColliders": EchoSceneBuilder.AddColliders(); break;
             default: throw new InvalidOperationException("Unhandled method: " + method);
         }
     }

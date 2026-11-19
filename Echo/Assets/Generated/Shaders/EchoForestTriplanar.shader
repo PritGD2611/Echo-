@@ -10,6 +10,7 @@ Shader "Echo/Forest Triplanar"
         [MainTexture] _BaseMap("Albedo", 2D) = "white" {}
         [Normal] _NormalMap("Normal", 2D) = "bump" {}
         _ArmMap("ARM (AO / Roughness / Metallic)", 2D) = "white" {}
+        _NoiseMap("Macro Noise (RG = warp, B = macro)", 2D) = "gray" {}
         [MainColor] _BaseColor("Tint", Color) = (1, 1, 1, 1)
 
         _BaseScale("Texture Scale (1 / meters)", Float) = 0.2
@@ -59,6 +60,7 @@ Shader "Echo/Forest Triplanar"
         TEXTURE2D(_BaseMap);    SAMPLER(sampler_BaseMap);
         TEXTURE2D(_NormalMap);  SAMPLER(sampler_NormalMap);
         TEXTURE2D(_ArmMap);     SAMPLER(sampler_ArmMap);
+        TEXTURE2D(_NoiseMap);   SAMPLER(sampler_NoiseMap);
 
         // ------------------------------------------------------------ noise
 
@@ -67,43 +69,6 @@ Shader "Echo/Forest Triplanar"
             p = frac(p * 0.1031);
             p += dot(p, p.yzx + 33.33);
             return frac((p.x + p.y) * p.z);
-        }
-
-        float ValueNoise(float3 p)
-        {
-            float3 i = floor(p);
-            float3 f = frac(p);
-            f = f * f * (3.0 - 2.0 * f);
-
-            float n000 = Hash13(i + float3(0, 0, 0));
-            float n100 = Hash13(i + float3(1, 0, 0));
-            float n010 = Hash13(i + float3(0, 1, 0));
-            float n110 = Hash13(i + float3(1, 1, 0));
-            float n001 = Hash13(i + float3(0, 0, 1));
-            float n101 = Hash13(i + float3(1, 0, 1));
-            float n011 = Hash13(i + float3(0, 1, 1));
-            float n111 = Hash13(i + float3(1, 1, 1));
-
-            float nx00 = lerp(n000, n100, f.x);
-            float nx10 = lerp(n010, n110, f.x);
-            float nx01 = lerp(n001, n101, f.x);
-            float nx11 = lerp(n011, n111, f.x);
-            float nxy0 = lerp(nx00, nx10, f.y);
-            float nxy1 = lerp(nx01, nx11, f.y);
-            return lerp(nxy0, nxy1, f.z);
-        }
-
-        float Fbm(float3 p)
-        {
-            float sum = 0;
-            float amp = 0.5;
-            for (int i = 0; i < 3; i++)
-            {
-                sum += ValueNoise(p) * amp;
-                p = p * 2.03 + 17.1;
-                amp *= 0.5;
-            }
-            return sum / 0.875;
         }
 
         // --------------------------------------------------------- sampling
@@ -166,6 +131,7 @@ Shader "Echo/Forest Triplanar"
             #pragma vertex Vert
             #pragma fragment Frag
 
+            #pragma shader_feature_local _TWO_SCALE
             #pragma multi_compile _ _MAIN_LIGHT_SHADOWS _MAIN_LIGHT_SHADOWS_CASCADE _MAIN_LIGHT_SHADOWS_SCREEN
             #pragma multi_compile _ _ADDITIONAL_LIGHTS_VERTEX _ADDITIONAL_LIGHTS
             #pragma multi_compile_fragment _ _ADDITIONAL_LIGHT_SHADOWS
@@ -230,25 +196,28 @@ Shader "Echo/Forest Triplanar"
                 weights /= max(weights.x + weights.y + weights.z, 1e-4);
 
                 // Low-frequency warp: no straight tile seams on the ground.
-                float3 warp = float3(
-                    Fbm(p * _MacroScale * 1.7),
-                    Fbm(p * _MacroScale * 1.7 + 5.3),
-                    Fbm(p * _MacroScale * 1.7 + 11.9)) - 0.5;
-                p += warp * _Warp;
+                // Sampled from a small RGBA noise texture (RG = warp, B = macro),
+                // which is far cheaper than evaluating fBm per pixel.
+                half4 noise = SAMPLE_TEXTURE2D(_NoiseMap, sampler_NoiseMap, p.xz * _MacroScale);
+                float2 warp = (noise.rg - 0.5) * 2.0;
+                p.xz += warp * _Warp;
+                p.y += (noise.b - 0.5) * _Warp * 0.35;
 
-                float macro = Fbm(p * _MacroScale);
+                half macroBig = SAMPLE_TEXTURE2D(_NoiseMap, sampler_NoiseMap, p.xz * _MacroScale * 0.17 + 0.53).r;
+                float macro = saturate(noise.b * 0.65 + macroBig * 0.35);
 
                 float scaleA = _BaseScale;
-                float scaleB = _BaseScale * _DetailScale;
 
-                half3 baseA = SampleBase(p, weights, scaleA);
-                half3 baseB = SampleBase(p + 41.7, weights, scaleB);
-                float blend = saturate(_DetailBlend * (0.35 + 0.65 * macro));
-                half3 albedo = lerp(baseA, baseB, blend);
+                #ifdef _TWO_SCALE
+                    half3 baseA = SampleBase(p, weights, scaleA);
+                    half3 baseB = SampleBase(p + 41.7, weights, scaleA * _DetailScale);
+                    float blend = saturate(_DetailBlend * (0.35 + 0.65 * macro));
+                    half3 albedo = lerp(baseA, baseB, blend);
+                #else
+                    half3 albedo = SampleBase(p, weights, scaleA);
+                #endif
 
-                half3 armA = SampleArm(p, weights, scaleA);
-                half3 armB = SampleArm(p + 41.7, weights, scaleB);
-                half3 arm = lerp(armA, armB, blend);
+                half3 arm = SampleArm(p, weights, scaleA);
 
                 albedo *= _BaseColor.rgb * (1.0 + (macro - 0.5) * 2.0 * _MacroStrength);
 
