@@ -33,6 +33,7 @@ public static class EchoSceneBuilder
     private const string RockDiff = "rocky_terrain_03_4k/textures/rocky_terrain_03_diff_4k.jpg";
     private const string RockNor = "rocky_terrain_03_4k/textures/rocky_terrain_03_nor_dx_4k.jpg";
     private const string RockArm = "rocky_terrain_03_4k/textures/rocky_terrain_03_arm_4k.jpg";
+    private const string RockDisp = "rocky_terrain_03_4k/textures/rocky_terrain_03_disp_4k.jpg";
 
     // ------------------------------------------------------------ entry
 
@@ -44,23 +45,28 @@ public static class EchoSceneBuilder
             PrepareTextures();
             AssetDatabase.Refresh();
 
+            var noise = BuildNoiseTexture();
+
             var bark = BuildMaterial(
                 "EchoBark",
                 BarkDiff, BarkNor, BarkArm,
                 new Color(0.48f, 0.48f, 0.52f),
-                1.15f, 0.85f, 0f, 0.85f, 0.20f, 0.25f);
+                1.15f, 0.85f, 0f, 0.85f, 0.20f, 0.25f, noise, false);
 
             var rock = BuildMaterial(
                 "EchoRockyTerrain",
                 RockDiff, RockNor, RockArm,
                 new Color(0.95f, 0.97f, 1.00f),
-                0.11f, 1.0f, 1.0f, 1.0f, 0.30f, 0.55f);
+                0.11f, 1.0f, 1.0f, 1.0f, 0.30f, 0.55f, noise, false);
 
             var groundMat = BuildMaterial(
                 "EchoRockyGround",
                 RockDiff, RockNor, RockArm,
                 new Color(0.85f, 0.87f, 0.92f),
-                0.075f, 0.95f, 1.0f, 1.0f, 0.38f, 0.85f);
+                0.075f, 0.95f, 1.0f, 1.0f, 0.38f, 0.85f, noise, true);
+
+            ApplyRelief(groundMat, 0.18f, 0.22f);
+            ApplyRelief(rock, 0f, 0.10f);
 
             var groundMesh = BuildGroundMesh();
             var trees = BuildTreeMeshes();
@@ -79,6 +85,313 @@ public static class EchoSceneBuilder
         catch (Exception e)
         {
             Log("BUILD EXCEPTION " + e);
+            Exit(1);
+        }
+    }
+
+    [MenuItem("Echo/Environment/Add Colliders")]
+    public static void AddColliders()
+    {
+        try
+        {
+            var scene = SceneManager.GetActiveScene();
+            var forest = GameObject.Find("Forest");
+            if (forest == null)
+            {
+                Log("colliders=FAIL no 'Forest' root in " + scene.path);
+                Exit(1);
+                return;
+            }
+
+            if (EditorApplication.isPlaying)
+            {
+                Log("colliders=SKIPPED exit Play Mode first");
+                Exit(2);
+                return;
+            }
+
+            var groundCount = 0;
+            var treeCount = 0;
+            var rockCount = 0;
+
+            foreach (var mf in forest.GetComponentsInChildren<MeshFilter>(true))
+            {
+                var go = mf.gameObject;
+                var mesh = mf.sharedMesh;
+                if (mesh == null) continue;
+
+                if (go.name == "Ground")
+                {
+                    AddStaticMeshCollider(go, mesh);
+                    groundCount++;
+                }
+                else if (go.name.StartsWith("Tree_", StringComparison.Ordinal))
+                {
+                    // Exact trunk/branch silhouette instead of a rough capsule.
+                    var capsule = go.GetComponent<CapsuleCollider>();
+                    if (capsule != null) UnityEngine.Object.DestroyImmediate(capsule);
+                    AddStaticMeshCollider(go, mesh);
+                    treeCount++;
+                }
+                else if (go.name.StartsWith("Rock_", StringComparison.Ordinal) ||
+                         go.name.StartsWith("HeroRock_", StringComparison.Ordinal))
+                {
+                    AddStaticMeshCollider(go, mesh);
+                    rockCount++;
+                }
+            }
+
+            EditorSceneManager.MarkSceneDirty(scene);
+            var playerStatus = FixPlayerInternal();
+            var saved = EditorSceneManager.SaveScene(scene);
+            Log($"colliders ground={groundCount} trees={treeCount} rocks={rockCount} saved={saved}");
+
+            foreach (var mesh in forest.GetComponentsInChildren<MeshFilter>(true)
+                         .Where(m => m.gameObject.name.StartsWith("Tree_", StringComparison.Ordinal))
+                         .Select(m => m.sharedMesh)
+                         .Where(m => m != null)
+                         .Distinct())
+            {
+                Log($"treeCollisionMesh {mesh.name} verts={mesh.vertexCount} tris={mesh.triangles.Length / 3}");
+            }
+            Log("player " + playerStatus);
+            Exit(0);
+        }
+        catch (Exception e)
+        {
+            Log("COLLIDER EXCEPTION " + e);
+            Exit(1);
+        }
+    }
+
+    /// <summary>
+    /// Player fix: a CharacterController must not share the object with a Rigidbody
+    /// or a CapsuleCollider, and the capsule must not start inside the terrain.
+    /// </summary>
+    private static string FixPlayerInternal()
+    {
+        var player = UnityEngine.Object.FindFirstObjectByType<PlayerController>(FindObjectsInactive.Include);
+        if (player == null) return "not found";
+
+        var go = player.gameObject;
+
+        var body = go.GetComponent<Rigidbody>();
+        if (body != null) UnityEngine.Object.DestroyImmediate(body);
+
+        var capsule = go.GetComponent<CapsuleCollider>();
+        if (capsule != null) UnityEngine.Object.DestroyImmediate(capsule);
+
+        var controller = go.GetComponent<CharacterController>();
+        if (controller == null) return "missing CharacterController";
+
+        var p = go.transform.position;
+        var ray = new Ray(new Vector3(p.x, 400f, p.z), Vector3.down);
+        RaycastHit hit = default;
+        var found = false;
+
+        var ground = GameObject.Find("Ground");
+        var groundCollider = ground != null ? ground.GetComponent<MeshCollider>() : null;
+        if (groundCollider != null) found = groundCollider.Raycast(ray, out hit, 1000f);
+        if (!found) found = Physics.Raycast(ray, out hit, 1000f, ~0, QueryTriggerInteraction.Ignore);
+        if (!found) return "ground raycast missed";
+
+        // Capsule bottom relative to the pivot; put it just above the terrain.
+        var bottomOffset = controller.center.y - controller.height * 0.5f;
+        var y = hit.point.y - bottomOffset + 0.05f;
+        go.transform.position = new Vector3(p.x, y, p.z);
+
+        return $"placed groundY={hit.point.y:F2} playerY={y:F2} rb/capsuleCollider removed";
+    }
+
+    private static void CreatePlayer(Vector3 position, Quaternion rotation)
+    {
+        var go = GameObject.CreatePrimitive(PrimitiveType.Capsule);
+        go.name = "Player";
+        go.transform.position = new Vector3(position.x, GroundHeight(position.x, position.z) + 1.02f, position.z);
+        go.transform.rotation = rotation;
+
+        // CharacterController only: a Rigidbody + CapsuleCollider on the same
+        // object fights the controller and freezes movement.
+        var capsule = go.GetComponent<CapsuleCollider>();
+        if (capsule != null) UnityEngine.Object.DestroyImmediate(capsule);
+        var body = go.GetComponent<Rigidbody>();
+        if (body != null) UnityEngine.Object.DestroyImmediate(body);
+
+        var controller = go.AddComponent<CharacterController>();
+        controller.center = Vector3.zero;
+        controller.height = 2f;
+        controller.radius = 0.5f;
+        controller.slopeLimit = 45f;
+        controller.stepOffset = 0.3f;
+        controller.skinWidth = 0.08f;
+
+        go.AddComponent<PlayerController>();
+    }
+
+    [MenuItem("Echo/Environment/Apply Ground Relief")]
+    public static void ApplySurfaceDetail()
+    {
+        try
+        {
+            SetupTexture(RockDisp, true, false);
+
+            ApplyReliefToAsset(MaterialDir + "/EchoRockyGround.mat", 0.18f, 0.22f);
+            ApplyReliefToAsset(MaterialDir + "/EchoRockyTerrain.mat", 0f, 0.10f);
+
+            AssetDatabase.SaveAssets();
+            AssetDatabase.Refresh();
+
+            var shader = Shader.Find("Echo/Forest Triplanar");
+            Log("shaderError=" + (shader == null ? "missing" : ShaderUtil.ShaderHasError(shader).ToString()));
+            Log("relief=applied");
+            Exit(0);
+        }
+        catch (Exception e)
+        {
+            Log("RELIEF EXCEPTION " + e);
+            Exit(1);
+        }
+    }
+
+    private static void ApplyRelief(Material mat, float height, float parallax)
+    {
+        mat.SetTexture("_DispMap", LoadTexture(RockDisp));
+        mat.SetFloat("_DispHeight", height);
+        mat.SetFloat("_Parallax", parallax);
+        mat.SetFloat("_PomOn", parallax > 0f ? 1f : 0f);
+        if (parallax > 0f) mat.EnableKeyword("_POM");
+        else mat.DisableKeyword("_POM");
+    }
+
+    private static void ApplyReliefToAsset(string path, float height, float parallax)
+    {
+        var mat = AssetDatabase.LoadAssetAtPath<Material>(path);
+        if (mat == null)
+        {
+            Log("material missing: " + path);
+            return;
+        }
+
+        ApplyRelief(mat, height, parallax);
+        EditorUtility.SetDirty(mat);
+        Log($"relief {mat.name} height={height} parallax={parallax}");
+    }
+
+    private static void AddStaticMeshCollider(GameObject go, Mesh mesh)
+    {
+        var collider = go.GetComponent<MeshCollider>();
+        if (collider == null) collider = go.AddComponent<MeshCollider>();
+        collider.sharedMesh = mesh;
+        collider.convex = false;
+    }
+
+    [MenuItem("Echo/Verify Changes")]
+    public static void VerifyChanges()
+    {
+        try
+        {
+            var shader = Shader.Find("Echo/Forest Triplanar");
+            Log("shaderError=" + (shader == null ? "missing" : ShaderUtil.ShaderHasError(shader).ToString()));
+
+            var groundMat = AssetDatabase.LoadAssetAtPath<Material>(MaterialDir + "/EchoRockyGround.mat");
+            if (groundMat == null) throw new InvalidOperationException("ground material missing");
+            var disp = groundMat.GetTexture("_DispMap");
+            Log($"groundMat pom={groundMat.IsKeywordEnabled("_POM")} dispHeight={groundMat.GetFloat("_DispHeight"):F2} " +
+                $"parallax={groundMat.GetFloat("_Parallax"):F2} dispMap={(disp != null ? disp.name : "none")}");
+
+            var forest = GameObject.Find("Forest");
+            if (forest == null) throw new InvalidOperationException("no Forest root");
+
+            var colliders = forest.GetComponentsInChildren<Collider>(true);
+            var meshCount = colliders.Count(c => c is MeshCollider);
+            var treeMesh = colliders.Count(c => c is MeshCollider && c.gameObject.name.StartsWith("Tree_", StringComparison.Ordinal));
+            var capsules = colliders.Count(c => c is CapsuleCollider);
+            var convex = colliders.OfType<MeshCollider>().Count(c => c.convex);
+            Log($"colliders mesh={meshCount} treeMesh={treeMesh} capsules={capsules} convex={convex}");
+
+            var treeCollider = colliders.FirstOrDefault(c => c is MeshCollider && c.gameObject.name.StartsWith("Tree_", StringComparison.Ordinal));
+            if (treeCollider != null)
+            {
+                // Horizontal shot at knee height into the trunk, from 8 m away.
+                var aim = treeCollider.transform.position + Vector3.up * 0.55f;
+                var ray = new Ray(aim + Vector3.right * 8f, Vector3.left);
+                var hitTree = Physics.Raycast(ray, out var treeHit, 12f, ~0, QueryTriggerInteraction.Ignore);
+                Log($"treeRaycast hit={hitTree} object={(treeHit.collider != null ? treeHit.collider.gameObject.name : "none")} " +
+                    $"type={(treeHit.collider != null ? treeHit.collider.GetType().Name : "none")} dist={treeHit.distance:F2}");
+            }
+
+            var hitGround = Physics.Raycast(new Vector3(0f, 80f, -10f), Vector3.down, out var groundHit, 200f, ~0, QueryTriggerInteraction.Ignore);
+            Log($"groundRaycast hit={hitGround} object={(groundHit.collider != null ? groundHit.collider.gameObject.name : "none")} " +
+                $"type={(groundHit.collider != null ? groundHit.collider.GetType().Name : "none")} y={groundHit.point.y:F2}");
+
+            var player = UnityEngine.Object.FindFirstObjectByType<PlayerController>(FindObjectsInactive.Include);
+            if (player != null)
+            {
+                var pgo = player.gameObject;
+                Log($"player y={pgo.transform.position.y:F2} cc={pgo.GetComponent<CharacterController>() != null} " +
+                    $"rb={pgo.GetComponent<Rigidbody>() != null} capsule={pgo.GetComponent<CapsuleCollider>() != null}");
+            }
+
+            // A/B renders: base -> POM only -> vertex only -> both.
+            var camPos = new Vector3(0f, 1.15f, -16f);
+            var lookAt = new Vector3(0f, 0.05f, 2f);
+
+            groundMat.DisableKeyword("_POM");
+            groundMat.SetFloat("_PomOn", 0f);
+            groundMat.SetFloat("_DispHeight", 0f);
+            RenderFrom(camPos, lookAt, "Logs/cli/verify-a-base.png", 55f);
+
+            groundMat.EnableKeyword("_POM");
+            groundMat.SetFloat("_PomOn", 1f);
+            RenderFrom(camPos, lookAt, "Logs/cli/verify-b-pom.png", 55f);
+
+            groundMat.DisableKeyword("_POM");
+            groundMat.SetFloat("_PomOn", 0f);
+            groundMat.SetFloat("_DispHeight", 0.18f);
+            RenderFrom(camPos, lookAt, "Logs/cli/verify-c-vertex.png", 55f);
+
+            groundMat.EnableKeyword("_POM");
+            groundMat.SetFloat("_PomOn", 1f);
+            RenderFrom(camPos, lookAt, "Logs/cli/verify-d-both.png", 55f);
+
+            EditorUtility.SetDirty(groundMat);
+            AssetDatabase.SaveAssets();
+            Log("verify=done");
+            Exit(0);
+        }
+        catch (Exception e)
+        {
+            Log("VERIFY EXCEPTION " + e);
+            Exit(1);
+        }
+    }
+
+    [MenuItem("Echo/Render Ground Detail")]
+    public static void RenderSurfaceCheck()
+    {
+        try
+        {
+            RenderFrom(new Vector3(0f, 1.6f, -26f), new Vector3(0.5f, 0.2f, -8f), "Logs/cli/ground-detail.png", 60f);
+            Exit(0);
+        }
+        catch (Exception e)
+        {
+            Log("RENDER EXCEPTION " + e);
+            Exit(1);
+        }
+    }
+
+    [MenuItem("Echo/Render Main Camera Preview")]
+    public static void RenderMainPreview()
+    {
+        try
+        {
+            RenderPreviewInternal();
+            Exit(0);
+        }
+        catch (Exception e)
+        {
+            Log("RENDER EXCEPTION " + e);
             Exit(1);
         }
     }
@@ -197,6 +510,7 @@ public static class EchoSceneBuilder
         SetupTexture(RockDiff, false, false);
         SetupTexture(RockNor, false, true);
         SetupTexture(RockArm, true, false);
+        SetupTexture(RockDisp, true, false);
         Log("textures=prepared");
     }
 
@@ -240,7 +554,7 @@ public static class EchoSceneBuilder
         string name,
         string diff, string nor, string arm,
         Color tint, float scale, float smoothness, float metallic, float ao,
-        float macroStrength, float warp)
+        float macroStrength, float warp, Texture2D noise, bool twoScale)
     {
         var shader = Shader.Find("Echo/Forest Triplanar");
         if (shader == null) throw new InvalidOperationException("Shader 'Echo/Forest Triplanar' not found.");
@@ -249,6 +563,7 @@ public static class EchoSceneBuilder
         mat.SetTexture("_BaseMap", LoadTexture(diff));
         mat.SetTexture("_NormalMap", LoadTexture(nor));
         mat.SetTexture("_ArmMap", LoadTexture(arm));
+        mat.SetTexture("_NoiseMap", noise);
         mat.SetColor("_BaseColor", tint);
         mat.SetFloat("_BaseScale", scale);
         mat.SetFloat("_DetailScale", 0.37f);
@@ -261,6 +576,8 @@ public static class EchoSceneBuilder
         mat.SetFloat("_MacroStrength", macroStrength);
         mat.SetFloat("_Warp", warp);
         mat.SetFloat("_InstanceVariation", 1.0f);
+        if (twoScale) mat.EnableKeyword("_TWO_SCALE");
+        else mat.DisableKeyword("_TWO_SCALE");
         mat.enableInstancing = true;
 
         var path = MaterialDir + "/" + name + ".mat";
@@ -268,10 +585,117 @@ public static class EchoSceneBuilder
         return mat;
     }
 
+    // ------------------------------------------------------ noise texture
+
+    private static Texture2D BuildNoiseTexture()
+    {
+        const string folder = GeneratedDir + "/Textures";
+        const string path = folder + "/EchoNoise.png";
+        const int size = 256;
+
+        EnsureFolder(folder);
+
+        var tex = new Texture2D(size, size, TextureFormat.RGBA32, false, true);
+        var pixels = new Color[size * size];
+
+        for (var y = 0; y < size; y++)
+        {
+            for (var x = 0; x < size; x++)
+            {
+                var u = x / (float)size;
+                var v = y / (float)size;
+
+                var r = PeriodicFbm(u, v, 4, 1);
+                var g = PeriodicFbm(u, v, 4, 2);
+                var b = PeriodicFbm(u, v, 9, 3);
+
+                pixels[y * size + x] = new Color(r, g, b, 1f);
+            }
+        }
+
+        tex.SetPixels(pixels);
+        tex.Apply();
+
+        var absolute = Path.GetFullPath(path);
+        File.WriteAllBytes(absolute, tex.EncodeToPNG());
+        UnityEngine.Object.DestroyImmediate(tex);
+
+        AssetDatabase.ImportAsset(path, ImportAssetOptions.ForceUpdate);
+        if (AssetImporter.GetAtPath(path) is TextureImporter importer)
+        {
+            importer.textureType = TextureImporterType.Default;
+            importer.sRGBTexture = false;
+            importer.wrapMode = TextureWrapMode.Repeat;
+            importer.mipmapEnabled = true;
+            importer.maxTextureSize = 256;
+            importer.anisoLevel = 4;
+            importer.SaveAndReimport();
+        }
+
+        var loaded = AssetDatabase.LoadAssetAtPath<Texture2D>(path);
+        if (loaded == null) throw new FileNotFoundException("Noise texture not found: " + path);
+        return loaded;
+    }
+
+    private static float PeriodicFbm(float u, float v, int cells, int seed)
+    {
+        float sum = 0f;
+        float amplitude = 0.5f;
+        float total = 0f;
+
+        for (var octave = 0; octave < 3; octave++)
+        {
+            sum += PeriodicNoise(u, v, cells, seed + octave * 17) * amplitude;
+            total += amplitude;
+            amplitude *= 0.5f;
+            cells *= 2;
+        }
+
+        return sum / total;
+    }
+
+    private static float PeriodicNoise(float u, float v, int cells, int seed)
+    {
+        var x = u * cells;
+        var y = v * cells;
+
+        var x0 = Mathf.FloorToInt(x);
+        var y0 = Mathf.FloorToInt(y);
+        var fx = x - x0;
+        var fy = y - y0;
+        fx = fx * fx * (3f - 2f * fx);
+        fy = fy * fy * (3f - 2f * fy);
+
+        var xa = ((x0 % cells) + cells) % cells;
+        var ya = ((y0 % cells) + cells) % cells;
+        var xb = (xa + 1) % cells;
+        var yb = (ya + 1) % cells;
+
+        var n00 = LatticeHash(xa, ya, seed);
+        var n10 = LatticeHash(xb, ya, seed);
+        var n01 = LatticeHash(xa, yb, seed);
+        var n11 = LatticeHash(xb, yb, seed);
+
+        var nx0 = Mathf.Lerp(n00, n10, fx);
+        var nx1 = Mathf.Lerp(n01, n11, fx);
+        return Mathf.Lerp(nx0, nx1, fy);
+    }
+
+    private static float LatticeHash(int x, int y, int seed)
+    {
+        unchecked
+        {
+            var h = x * 374761393 + y * 668265263 + seed * 1442695040;
+            h = (h ^ (h >> 13)) * 1274126177;
+            h ^= h >> 16;
+            return (h & 0x7fffffff) / (float)0x7fffffff;
+        }
+    }
+
     // ----------------------------------------------------------- meshes
 
-    private const float GroundSize = 170f;
-    private const int GroundRes = 170;
+    private const float GroundSize = 340f;
+    private const int GroundRes = 240;
 
     private static Mesh BuildGroundMesh()
     {
@@ -333,9 +757,9 @@ public static class EchoSceneBuilder
         var fine = (Mathf.PerlinNoise(x * 0.31f, z * 0.31f) - 0.5f) * 0.22f;
 
         // Path meanders along +Z and sits slightly lower than the banks.
-        var pathX = Mathf.Sin(z * 0.045f) * 2.4f;
-        var pathMask = 1f - Smooth01(2.6f, 7.5f, Mathf.Abs(x - pathX));
-        var bank = Smooth01(3.0f, 14.0f, Mathf.Abs(x - pathX)) * 0.9f;
+        var pathX = Mathf.Sin(z * 0.03f) * 5f;
+        var pathMask = 1f - Smooth01(3.0f, 9.0f, Mathf.Abs(x - pathX));
+        var bank = Smooth01(4.0f, 20.0f, Mathf.Abs(x - pathX)) * 1.2f;
 
         return broad + mid + fine + bank - pathMask * 0.45f;
     }
@@ -368,8 +792,8 @@ public static class EchoSceneBuilder
         TubeMeshData data, Vector3 start, Vector3 dir, float length, float radius,
         int depth, int maxDepth, float spread, Random rng)
     {
-        var steps = depth == 0 ? 12 : Mathf.Max(4, 9 - depth * 2);
-        var sides = depth == 0 ? 9 : Mathf.Max(4, 8 - depth * 2);
+        var steps = depth == 0 ? 12 : Mathf.Max(3, 9 - depth * 2);
+        var sides = depth == 0 ? 9 : Mathf.Max(3, 9 - depth * 2);
 
         var centers = new List<Vector3>();
         var radii = new List<float>();
@@ -549,6 +973,12 @@ public static class EchoSceneBuilder
         Mesh ground, Dictionary<string, Mesh> trees, Dictionary<string, Mesh> rocks,
         Mesh debris, Material bark, Material rock, Material groundMat)
     {
+        // A rebuild replaces the whole scene, so keep the player the user added.
+        var existingPlayer = UnityEngine.Object.FindFirstObjectByType<PlayerController>(FindObjectsInactive.Include);
+        var hadPlayer = existingPlayer != null;
+        var playerPos = hadPlayer ? existingPlayer.transform.position : Vector3.zero;
+        var playerRot = hadPlayer ? existingPlayer.transform.rotation : Quaternion.identity;
+
         var scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
 
         var forest = new GameObject("Forest");
@@ -567,28 +997,29 @@ public static class EchoSceneBuilder
         groundRenderer.sharedMaterial = groundMat;
         groundRenderer.shadowCastingMode = ShadowCastingMode.On;
         groundRenderer.receiveShadows = true;
+        AddStaticMeshCollider(groundGo, ground);
 
         var rng = new Random(24601);
         var placed = new List<Vector3>();
 
         // Keep the spawn area around the camera clear so the view opens down the path.
-        var cameraStart = new Vector3(pathXAt(-26f), 0f, -26f);
+        var cameraStart = new Vector3(pathXAt(-70f), 0f, -70f);
 
         // Trees -------------------------------------------------------
         var treeNames = trees.Keys.OrderBy(k => k).ToArray();
         var placedCount = 0;
         var attempts = 0;
-        while (placedCount < 380 && attempts < 9000)
+        while (placedCount < 700 && attempts < 40000)
         {
             attempts++;
-            var z = (float)(rng.NextDouble() * 2 - 1) * 76f;
+            var z = (float)(rng.NextDouble() * 2 - 1) * 155f;
             var side = rng.NextDouble() < 0.5 ? -1f : 1f;
-            var offset = 5.5f + (float)Math.Pow(rng.NextDouble(), 0.7) * 62f;
+            var offset = 6f + (float)Math.Pow(rng.NextDouble(), 0.85) * 82f;
             var x = pathXAt(z) + side * offset;
 
-            if (Mathf.Abs(x) > 78f) continue;
+            if (Mathf.Abs(x) > 160f) continue;
             if ((new Vector3(x, 0f, z) - cameraStart).sqrMagnitude < 144f) continue;
-            if (placed.Any(p => (p - new Vector3(x, 0, z)).sqrMagnitude < 12.25f)) continue;
+            if (placed.Any(p => (p - new Vector3(x, 0, z)).sqrMagnitude < 10.9f)) continue;
 
             placed.Add(new Vector3(x, 0, z));
 
@@ -607,27 +1038,28 @@ public static class EchoSceneBuilder
             go.AddComponent<MeshFilter>().sharedMesh = mesh;
             var mr = go.AddComponent<MeshRenderer>();
             mr.sharedMaterial = bark;
-            mr.shadowCastingMode = ShadowCastingMode.On;
+            mr.shadowCastingMode = ShadowCastingMode.Off;
             mr.receiveShadows = true;
+            AddStaticMeshCollider(go, mesh);
             placedCount++;
         }
 
         // Rocks -------------------------------------------------------
         var rockNames = rocks.Keys.OrderBy(k => k).ToArray();
         var pathRocks = rockNames.Where(n => n.Contains("Slab")).ToArray();
-        for (var i = 0; i < 210; i++)
+        for (var i = 0; i < 260; i++)
         {
-            var alongPath = i < 100;
+            var alongPath = i < 120;
             float x, z;
             if (alongPath)
             {
-                z = (float)(rng.NextDouble() * 2 - 1) * 62f;
+                z = (float)(rng.NextDouble() * 2 - 1) * 150f;
                 x = pathXAt(z) + (float)(rng.NextDouble() * 2 - 1) * 4.6f;
             }
             else
             {
-                x = (float)(rng.NextDouble() * 2 - 1) * 74f;
-                z = (float)(rng.NextDouble() * 2 - 1) * 74f;
+                x = (float)(rng.NextDouble() * 2 - 1) * 155f;
+                z = (float)(rng.NextDouble() * 2 - 1) * 155f;
                 if (Mathf.Abs(x - pathXAt(z)) < 4f) continue;
             }
 
@@ -652,26 +1084,28 @@ public static class EchoSceneBuilder
             mr.sharedMaterial = rock;
             mr.shadowCastingMode = ShadowCastingMode.On;
             mr.receiveShadows = true;
+            AddStaticMeshCollider(go, rocks[name]);
         }
 
         // Hero boulders framing the path ------------------------------
         var heroRocks = new[]
         {
-            new Vector4(-7.5f, -14f, 2.4f, 0f),
-            new Vector4(6.8f, -6f, 2.1f, 0f),
-            new Vector4(-8.5f, 5f, 2.8f, 0f),
-            new Vector4(7.5f, 16f, 2.2f, 0f),
-            new Vector4(-6.0f, 27f, 2.6f, 0f),
-            new Vector4(9.0f, 36f, 2.0f, 0f)
+            new Vector4(-7.5f, -50f, 2.4f, 0f),
+            new Vector4(6.8f, -32f, 2.1f, 0f),
+            new Vector4(-8.5f, -12f, 2.8f, 0f),
+            new Vector4(7.5f, 12f, 2.2f, 0f),
+            new Vector4(-6.0f, 36f, 2.6f, 0f),
+            new Vector4(9.0f, 62f, 2.0f, 0f)
         };
 
         for (var i = 0; i < heroRocks.Length; i++)
         {
             var hero = heroRocks[i];
             var name = i % 2 == 0 ? "Rock_Boulder_A" : "Rock_Boulder_C";
+            var heroX = pathXAt(hero.y) + hero.x;
             var go = new GameObject("HeroRock_" + i);
             go.transform.SetParent(rockRoot);
-            go.transform.position = new Vector3(hero.x, GroundHeight(hero.x, hero.y) - 0.15f, hero.y);
+            go.transform.position = new Vector3(heroX, GroundHeight(heroX, hero.y) - 0.15f, hero.y);
             go.transform.rotation = Quaternion.Euler(-4f, i * 63f, 3f);
             go.transform.localScale = new Vector3(hero.z, hero.z * 0.75f, hero.z * 1.15f);
             go.AddComponent<MeshFilter>().sharedMesh = rocks[name];
@@ -679,11 +1113,24 @@ public static class EchoSceneBuilder
             mr.sharedMaterial = rock;
             mr.shadowCastingMode = ShadowCastingMode.On;
             mr.receiveShadows = true;
+            AddStaticMeshCollider(go, rocks[name]);
         }
 
+        // Scene budget --------------------------------------------------
+        long totalVerts = 0;
+        long totalTris = 0;
+        var renderers = forest.GetComponentsInChildren<MeshFilter>();
+        foreach (var mf in renderers)
+        {
+            if (mf.sharedMesh == null) continue;
+            totalVerts += mf.sharedMesh.vertexCount;
+            totalTris += mf.sharedMesh.triangles.Length / 3;
+        }
+        Log($"budget renderers={renderers.Length} verts={totalVerts} tris={totalTris}");
+
         // Camera ------------------------------------------------------
-        var cameraX = pathXAt(-26f);
-        var cameraZ = -26f;
+        var cameraX = pathXAt(-70f);
+        var cameraZ = -70f;
         var cameraY = GroundHeight(cameraX, cameraZ) + 1.95f;
 
         var camGo = new GameObject("Main Camera") { tag = "MainCamera" };
@@ -691,7 +1138,7 @@ public static class EchoSceneBuilder
         cam.clearFlags = CameraClearFlags.SolidColor;
         cam.fieldOfView = 58f;
         cam.nearClipPlane = 0.1f;
-        cam.farClipPlane = 420f;
+        cam.farClipPlane = 170f;
         camGo.transform.position = new Vector3(cameraX, cameraY, cameraZ);
         camGo.transform.rotation = Quaternion.Euler(4.0f, 2.5f, 0f);
         cam.gameObject.AddComponent<AudioListener>();
@@ -727,7 +1174,7 @@ public static class EchoSceneBuilder
         RenderSettings.sun = light;
         RenderSettings.fog = true;
         RenderSettings.fogMode = FogMode.ExponentialSquared;
-        RenderSettings.fogDensity = 0.017f;
+        RenderSettings.fogDensity = 0.024f;
         RenderSettings.fogColor = new Color(0.36f, 0.43f, 0.55f);
 
         RenderSettings.ambientMode = AmbientMode.Trilight;
@@ -740,6 +1187,8 @@ public static class EchoSceneBuilder
 
         RenderSettings.reflectionIntensity = 0.7f;
         RenderSettings.defaultReflectionMode = DefaultReflectionMode.Skybox;
+
+        if (hadPlayer) CreatePlayer(playerPos, playerRot);
 
         EditorSceneManager.MarkSceneDirty(scene);
         EditorSceneManager.SaveScene(scene, ScenePath);
@@ -758,10 +1207,10 @@ public static class EchoSceneBuilder
         }
         Log($"camera={camPos} groundY={GroundHeight(cameraX, cameraZ):F2}");
 
-        Log($"scene={ScenePath} trees={placedCount} rocks=190 debris=26");
+        Log($"scene={ScenePath} trees={placedCount} rocks=260");
     }
 
-    private static float pathXAt(float z) => Mathf.Sin(z * 0.045f) * 2.4f;
+    private static float pathXAt(float z) => Mathf.Sin(z * 0.03f) * 5f;
 
     /// <summary>Standard 0..1 smoothstep (Mathf.SmoothStep lerps between from/to instead).</summary>
     private static float Smooth01(float edge0, float edge1, float x)
@@ -819,14 +1268,8 @@ public static class EchoSceneBuilder
             c.response.Override(0.8f);
         });
 
-        Add<DepthOfField>(c =>
-        {
-            c.mode.Override(DepthOfFieldMode.Gaussian);
-            c.gaussianStart.Override(14f);
-            c.gaussianEnd.Override(46f);
-            c.gaussianMaxRadius.Override(0.7f);
-            c.highQualitySampling.Override(false);
-        });
+        // Depth of field intentionally omitted: it costs a full-screen pass and the
+        // fog already provides the depth cue.
 
         EditorUtility.SetDirty(profile);
         AssetDatabase.SaveAssets();
@@ -986,6 +1429,11 @@ public static class EchoSceneBuilder
         if (Application.isBatchMode) EditorApplication.Exit(code);
     }
 }
+
+
+
+
+
 
 
 

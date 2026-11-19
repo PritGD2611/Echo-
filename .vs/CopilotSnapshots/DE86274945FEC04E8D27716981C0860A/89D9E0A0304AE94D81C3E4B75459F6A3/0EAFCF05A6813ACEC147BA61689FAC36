@@ -1,0 +1,44 @@
+﻿using UnityEngine;
+
+[RequireComponent(typeof(CharacterController))]
+public class PlayerController : MonoBehaviour
+{
+    [SerializeField] private float moveSpeed = 5f;
+    [SerializeField] private float jumpHeight = 2f;
+    [SerializeField] private float gravity = -9.81f;
+
+    private CharacterController characterController;
+    private Vector3 verticalVelocity;
+
+    private void Awake()
+    {
+        characterController = GetComponent<CharacterController>();
+    }
+
+    private void Update()
+    {
+        float horizontal = Input.GetAxis("Horizontal");
+        float vertical = Input.GetAxis("Vertical");
+        Vector3 movement = transform.right * horizontal + transform.forward * vertical;
+
+        if (movement.sqrMagnitude > 1f)
+        {
+            movement.Normalize();
+        }
+
+        characterController.Move(movement * moveSpeed * Time.deltaTime);
+
+        if (characterController.isGrounded && verticalVelocity.y < 0f)
+        {
+            verticalVelocity.y = -2f;
+        }
+
+        if (characterController.isGrounded && Input.GetButtonDown("Jump"))
+        {
+            verticalVelocity.y = Mathf.Sqrt(jumpHeight * -2f * gravity);
+        }
+
+        verticalVelocity.y += gravity * Time.deltaTime;
+        characterController.Move(verticalVelocity * Time.deltaTime);
+    }
+}
