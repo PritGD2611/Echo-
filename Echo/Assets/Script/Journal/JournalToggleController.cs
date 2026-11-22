@@ -8,14 +8,15 @@ public class JournalToggleController : MonoBehaviour
     [Header("Drag MainPanel(BG) Here")]
     public GameObject journalObject;
 
-    [Header("First-Person Cursor Settings")]
+    [Header("Player Look / Movement Control")]
+    [Tooltip("Drag your Player Capsule (with FirstPersonController) here")]
+    public MonoBehaviour firstPersonController; // Drag FirstPersonController component here
     public bool manageCursor = true;
 
     private bool isJournalOpen = false;
 
     void Start()
     {
-        // Start with the journal closed when the game begins
         CloseJournal();
     }
 
@@ -24,7 +25,6 @@ public class JournalToggleController : MonoBehaviour
         bool jPressed = false;
         bool escPressed = false;
 
-        // Works automatically with Unity 6's New Input System AND old Input Manager
 #if ENABLE_INPUT_SYSTEM
         if (Keyboard.current != null)
         {
@@ -36,7 +36,6 @@ public class JournalToggleController : MonoBehaviour
         escPressed = Input.GetKeyDown(KeyCode.Escape);
 #endif
 
-        // Pressing 'J' toggles the journal Open or Closed
         if (jPressed)
         {
             if (isJournalOpen)
@@ -44,7 +43,6 @@ public class JournalToggleController : MonoBehaviour
             else
                 OpenJournal();
         }
-        // Pressing 'Esc' ONLY closes the journal if it is currently open
         else if (escPressed && isJournalOpen)
         {
             CloseJournal();
@@ -56,6 +54,10 @@ public class JournalToggleController : MonoBehaviour
         isJournalOpen = true;
         if (journalObject != null)
             journalObject.SetActive(true);
+
+        // Freeze camera rotation & movement while reading the journal
+        if (firstPersonController != null)
+            firstPersonController.enabled = false;
 
         if (manageCursor)
         {
@@ -69,6 +71,10 @@ public class JournalToggleController : MonoBehaviour
         isJournalOpen = false;
         if (journalObject != null)
             journalObject.SetActive(false);
+
+        // Restore camera rotation & movement
+        if (firstPersonController != null)
+            firstPersonController.enabled = true;
 
         if (manageCursor)
         {

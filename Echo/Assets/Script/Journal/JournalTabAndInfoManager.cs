@@ -18,18 +18,19 @@ public class JournalTabAndInfoManager : MonoBehaviour
     public GameObject rightPageCaseTypeInfoPanel;
 
     [Header("Media Tab Panels")]
-    public GameObject leftPageMediaPanel;   // Drag 'LeftPageMedia' here
-    public GameObject rightPageMediaPanel;  // Drag 'RightPageMedia' here
+    public GameObject leftPageMediaPanel;
+    public GameObject rightPageMediaPanel;
 
     [Header("Media Photo Slots (6 Slots: 3 Left, 3 Right)")]
     public GameObject[] photoSlotFrames = new GameObject[6];
     public Image[] photoSlotImages = new Image[6];
+    public Button[] photoDeleteButtons = new Button[6]; // Drag the 6 DeleteButtons here
 
     [Header("Auto-Populated Lists (21 Items Each)")]
     public GameObject[] caseInfoPanels = new GameObject[21];
     public Button[] caseInfoButtons = new Button[21];
 
-    private int currentPhotoIndex = 0;
+    private List<Sprite> savedPhotos = new List<Sprite>();
     private bool isInitialized = false;
 
     [ContextMenu("Auto-Fetch Media Photo Slots")]
@@ -37,32 +38,40 @@ public class JournalTabAndInfoManager : MonoBehaviour
     {
         List<GameObject> foundFrames = new List<GameObject>();
         List<Image> foundImages = new List<Image>();
+        List<Button> foundDeleteBtns = new List<Button>();
 
-        CollectSlotsFromPage(leftPageMediaPanel, foundFrames, foundImages);
-        CollectSlotsFromPage(rightPageMediaPanel, foundFrames, foundImages);
+        CollectSlotsFromPage(leftPageMediaPanel, foundFrames, foundImages, foundDeleteBtns);
+        CollectSlotsFromPage(rightPageMediaPanel, foundFrames, foundImages, foundDeleteBtns);
 
         if (foundFrames.Count > 0)
         {
             photoSlotFrames = foundFrames.ToArray();
             photoSlotImages = foundImages.ToArray();
+            photoDeleteButtons = foundDeleteBtns.ToArray();
         }
     }
 
-    private void CollectSlotsFromPage(GameObject pagePanel, List<GameObject> frames, List<Image> images)
+    private void CollectSlotsFromPage(GameObject pagePanel, List<GameObject> frames, List<Image> images, List<Button> deleteBtns)
     {
         if (pagePanel == null) return;
 
-        for (int i = 0; i < pagePanel.transform.childCount; i++)
+        Transform slotsContainer = pagePanel.transform.Find("PhotoSlots");
+        if (slotsContainer == null)
+            slotsContainer = pagePanel.transform;
+
+        for (int i = 0; i < slotsContainer.childCount; i++)
         {
-            Transform child = pagePanel.transform.GetChild(i);
-            // Skip TitleText (no Image component) and grab only the Polaroid frames with a child photo Image
-            if (child.GetComponent<Image>() != null && child.childCount > 0)
+            Transform slotFrame = slotsContainer.GetChild(i);
+            if (slotFrame.childCount > 0)
             {
-                Image innerPhoto = child.GetChild(0).GetComponent<Image>();
+                Image innerPhoto = slotFrame.GetChild(0).GetComponent<Image>();
+                Button delBtn = slotFrame.GetComponentInChildren<Button>(true);
+
                 if (innerPhoto != null)
                 {
-                    frames.Add(child.gameObject);
+                    frames.Add(slotFrame.gameObject);
                     images.Add(innerPhoto);
+                    deleteBtns.Add(delBtn);
                 }
             }
         }
@@ -107,11 +116,18 @@ public class JournalTabAndInfoManager : MonoBehaviour
         if (caseInfoPanels == null || caseInfoPanels.Length == 0 || caseInfoPanels[0] == null)
             AutoFetchInfoElements();
 
-        for (int i = 0; i < photoSlotFrames.Length; i++)
+        // Hook up Delete Buttons for each of the 6 slots
+        for (int i = 0; i < photoDeleteButtons.Length; i++)
         {
-            if (photoSlotFrames[i] != null)
-                photoSlotFrames[i].SetActive(false);
+            int slotIndex = i;
+            if (photoDeleteButtons[i] != null)
+            {
+                photoDeleteButtons[i].onClick.RemoveAllListeners();
+                photoDeleteButtons[i].onClick.AddListener(() => DeletePhotoAtSlot(slotIndex));
+            }
         }
+
+        RefreshMediaUI();
     }
 
     void Start()
@@ -184,31 +200,56 @@ public class JournalTabAndInfoManager : MonoBehaviour
     {
         EnsureInitialized();
 
-        if (photoSlotFrames == null || photoSlotFrames.Length == 0)
+        if (savedPhotos.Count >= photoSlotFrames.Length)
         {
-            Debug.LogWarning("No Media photo slots found! Assign LeftPageMedia and RightPageMedia on MainPanel(BG).");
+            Debug.Log("Journal Media page is full (6/6 photos)! Delete a photo to make room.");
             return false;
         }
 
-        if (currentPhotoIndex >= photoSlotFrames.Length)
-        {
-            Debug.Log("Journal Media page is full (6/6 photos)!");
-            return false;
-        }
+        savedPhotos.Add(newPhotoSprite);
+        RefreshMediaUI();
 
-        if (photoSlotImages[currentPhotoIndex] != null)
-        {
-            photoSlotImages[currentPhotoIndex].sprite = newPhotoSprite;
-            photoSlotImages[currentPhotoIndex].color = Color.white;
-        }
-
-        if (photoSlotFrames[currentPhotoIndex] != null)
-        {
-            photoSlotFrames[currentPhotoIndex].SetActive(true);
-        }
-
-        currentPhotoIndex++;
-        Debug.Log($"Saved photo {currentPhotoIndex}/{photoSlotFrames.Length} into Journal Media tab.");
+        Debug.Log($"Saved photo {savedPhotos.Count}/{photoSlotFrames.Length} into Journal Media tab.");
         return true;
+    }
+
+    public void DeletePhotoAtSlot(int index)
+    {
+        if (index < 0 || index >= savedPhotos.Count) return;
+
+        // Clean up texture memory for the deleted photo
+        Sprite removed = savedPhotos[index];
+        if (removed != null && removed.texture != null)
+            Destroy(removed.texture);
+
+        savedPhotos.RemoveAt(index);
+        RefreshMediaUI();
+
+        Debug.Log($"Deleted photo at slot {index + 1}. Remaining photos: {savedPhotos.Count}/{photoSlotFrames.Length}");
+    }
+
+    private void RefreshMediaUI()
+    {
+        for (int i = 0; i < photoSlotFrames.Length; i++)
+        {
+            if (i < savedPhotos.Count)
+            {
+                if (photoSlotImages[i] != null)
+                {
+                    photoSlotImages[i].sprite = savedPhotos[i];
+                    photoSlotImages[i].color = Color.white;
+                }
+                if (photoSlotFrames[i] != null)
+                    photoSlotFrames[i].SetActive(true);
+            }
+            else
+            {
+                if (photoSlotImages[i] != null)
+                    photoSlotImages[i].sprite = null;
+
+                if (photoSlotFrames[i] != null)
+                    photoSlotFrames[i].SetActive(false);
+            }
+        }
     }
 }
