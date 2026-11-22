@@ -1,17 +1,19 @@
 using UnityEngine;
 using System.Collections;
+using System.IO;
 using UnityEngine.UI;
 using UnityEngine.InputSystem;
 
 public class PhotoCapture : MonoBehaviour
 {
     [Header("Camera Equipment")]
-    [SerializeField] private GameObject cameraModel3D;       // Drag your 3D Camera model here
-    [SerializeField] private Camera viewfinderCamera;       // Drag the ViewfinderCamera here
-    [SerializeField] private GameObject journalPanel;       // Drag MainPanel(BG) here
+    [SerializeField] private GameObject cameraModel3D;
+    [SerializeField] private Camera viewfinderCamera;
+    [SerializeField] private GameObject journalPanel;
+    [SerializeField] private JournalTabAndInfoManager journalManager;
 
     [Header("UI & Polaroids")]
-    [SerializeField] private GameObject cameraCanvas;       // UI overlay (lines, stickers, etc.)
+    [SerializeField] private GameObject cameraCanvas;
     [SerializeField] private Image photoDisplayArea;
     [SerializeField] private GameObject photoFrame;
 
@@ -19,6 +21,10 @@ public class PhotoCapture : MonoBehaviour
     [SerializeField] private GameObject cameraFlash;
     [SerializeField] private float flashTime = 0.2f;
     [SerializeField] private Animator fadingAnimation;
+
+    [Header("Save Settings")]
+    [SerializeField] private string saveFolderName = "CapturedPhotos";
+    private int photoCounter = 1;
 
     private bool isCameraEquipped = false;
     private bool viewingPhoto = false;
@@ -28,17 +34,14 @@ public class PhotoCapture : MonoBehaviour
     {
         screenCapture = new Texture2D(Screen.width, Screen.height, TextureFormat.RGB24, false);
 
-        // Start unequipped
         SetCameraEquipped(false);
         if (photoFrame != null) photoFrame.SetActive(false);
     }
 
     void Update()
     {
-        // 1. Toggle Camera Equip state with 'P'
         if (Keyboard.current != null && Keyboard.current.pKey.wasPressedThisFrame)
         {
-            // Don't equip/unequip if journal is open
             if (journalPanel == null || !journalPanel.activeInHierarchy)
             {
                 SetCameraEquipped(!isCameraEquipped);
@@ -46,11 +49,8 @@ public class PhotoCapture : MonoBehaviour
         }
 
         if (!isCameraEquipped) return;
-
-        // Block taking photos if journal is open
         if (journalPanel != null && journalPanel.activeInHierarchy) return;
 
-        // 2. Left Click to Take Photo or Dismiss Polaroid
         if (Mouse.current != null && Mouse.current.leftButton.wasPressedThisFrame)
         {
             if (!viewingPhoto)
@@ -69,7 +69,7 @@ public class PhotoCapture : MonoBehaviour
         isCameraEquipped = equipped;
 
         if (cameraModel3D != null) cameraModel3D.SetActive(equipped);
-        if (viewfinderCamera != null) viewfinderCamera.gameObject.SetActive(equipped); // Fixed here!
+        if (viewfinderCamera != null) viewfinderCamera.gameObject.SetActive(equipped);
         if (cameraCanvas != null) cameraCanvas.SetActive(equipped);
 
         if (!equipped)
@@ -78,8 +78,6 @@ public class PhotoCapture : MonoBehaviour
             if (cameraFlash != null) cameraFlash.SetActive(false);
             RemovePhoto();
         }
-
-        Debug.Log("Camera Equipped: " + isCameraEquipped);
     }
 
     IEnumerator CapturePhoto()
@@ -91,26 +89,52 @@ public class PhotoCapture : MonoBehaviour
 
         yield return new WaitForEndOfFrame();
 
-        // 1. Get the Render Texture from the Viewfinder Camera
         RenderTexture activeRT = RenderTexture.active;
         RenderTexture.active = viewfinderCamera.targetTexture;
 
-        // 2. Render what the viewfinder sees into a new Texture2D
-        Texture2D camTexture = new Texture2D(viewfinderCamera.targetTexture.width, viewfinderCamera.targetTexture.height, TextureFormat.RGB24, false);
-        camTexture.ReadPixels(new Rect(0, 0, viewfinderCamera.targetTexture.width, viewfinderCamera.targetTexture.height), 0, 0);
+        Texture2D camTexture = new Texture2D(
+            viewfinderCamera.targetTexture.width,
+            viewfinderCamera.targetTexture.height,
+            TextureFormat.RGB24,
+            false
+        );
+        camTexture.ReadPixels(
+            new Rect(0, 0, viewfinderCamera.targetTexture.width, viewfinderCamera.targetTexture.height),
+            0,
+            0
+        );
         camTexture.Apply();
 
-        // 3. Restore previous render texture
         RenderTexture.active = activeRT;
-
-        // 4. Assign this captured viewfinder texture to our screenCapture variable
         screenCapture = camTexture;
 
+        SavePhotoToProject();
         ShowPhoto();
 
         yield return new WaitForSeconds(flashTime);
         if (cameraFlash != null)
             cameraFlash.SetActive(false);
+    }
+
+    private void SavePhotoToProject()
+    {
+        if (screenCapture == null) return;
+
+        string folderPath = Path.Combine(Application.dataPath, saveFolderName);
+        if (!Directory.Exists(folderPath))
+            Directory.CreateDirectory(folderPath);
+
+        string fileName = $"EchoPhoto_{System.DateTime.Now:yyyyMMdd_HHmmss}_{photoCounter}.png";
+        string fullPath = Path.Combine(folderPath, fileName);
+
+        byte[] pngBytes = screenCapture.EncodeToPNG();
+        File.WriteAllBytes(fullPath, pngBytes);
+
+        photoCounter++;
+
+#if UNITY_EDITOR
+        UnityEditor.AssetDatabase.Refresh();
+#endif
     }
 
     void ShowPhoto()
@@ -125,6 +149,14 @@ public class PhotoCapture : MonoBehaviour
         if (photoDisplayArea != null) photoDisplayArea.sprite = photoSprite;
         if (photoFrame != null) photoFrame.SetActive(true);
         if (fadingAnimation != null) fadingAnimation.Play("PhotoFade");
+
+        if (journalManager == null)
+            journalManager = FindFirstObjectByType<JournalTabAndInfoManager>(FindObjectsInactive.Include);
+
+        if (journalManager != null)
+            journalManager.AddPhotoToJournal(photoSprite);
+        else
+            Debug.LogWarning("PhotoCapture could not find JournalTabAndInfoManager in the scene!");
     }
 
     void RemovePhoto()
