@@ -10,6 +10,8 @@ public class AnomalyShowcaseManager : MonoBehaviour
     public string activeCaseName;
     public string[] activeAnomalies = new string[3];
 
+    public event System.Action InvestigationStarted;
+
     // Exact same 21 combinations as EchoJournalManager
     private readonly int[,] combos = new int[21, 3]
     {
@@ -71,5 +73,6 @@ public class AnomalyShowcaseManager : MonoBehaviour
         }
 
         Debug.Log($"[SHOWCASE] Active: {activeCaseName} -> {activeAnomalies[0]}, {activeAnomalies[1]}, {activeAnomalies[2]}");
+        InvestigationStarted?.Invoke();
     }
 }
