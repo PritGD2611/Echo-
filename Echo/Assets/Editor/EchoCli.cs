@@ -18,6 +18,12 @@ public static class EchoCli
 {
     private const string Tag = "[EchoCli] ";
 
+    // The cabin commands load a scene, so they are batch-only.
+    public static void BuildCabinLevel() => CabinLevelBuilder.Build();
+    public static void InspectCabinLevel() => CabinLevelBuilder.Inspect();
+    public static void UpdateCabinNight() => CabinLevelBuilder.UpdateNight();
+    public static void UpdateCabinLocalLighting() => CabinLevelBuilder.UpdateLocalLighting();
+
     // ---------------------------------------------------------------- ping
 
     /// <summary>Health check used by the live bridge (safe while the Editor is open).</summary>
