@@ -119,6 +119,11 @@ internal sealed partial class CabinLevelBuilder
 
         public Mesh Bake(string name, bool tangents = true)
         {
+            return Save(ToMesh(name, tangents), name + ".asset");
+        }
+
+        public Mesh ToMesh(string name, bool tangents = true)
+        {
             var mesh = new Mesh { name = name, indexFormat = vertices.Count > 65535 ? IndexFormat.UInt32 : IndexFormat.UInt16 };
             mesh.SetVertices(vertices);
             mesh.SetNormals(normals);
@@ -126,7 +131,7 @@ internal sealed partial class CabinLevelBuilder
             mesh.SetColors(colors);
             mesh.SetTriangles(indices, 0);
             if (tangents) mesh.RecalculateTangents();
-            return Save(mesh, name + ".asset");
+            return mesh;
         }
     }
 

@@ -23,6 +23,7 @@ public static class EchoCli
     public static void InspectCabinLevel() => CabinLevelBuilder.Inspect();
     public static void UpdateCabinNight() => CabinLevelBuilder.UpdateNight();
     public static void UpdateCabinLocalLighting() => CabinLevelBuilder.UpdateLocalLighting();
+    public static void UpdateCabinGrass() => CabinLevelBuilder.UpdateGrass();
 
     // ---------------------------------------------------------------- ping
 

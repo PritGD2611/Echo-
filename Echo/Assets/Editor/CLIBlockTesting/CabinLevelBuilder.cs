@@ -50,6 +50,9 @@ internal sealed partial class CabinLevelBuilder
             var scene = EditorSceneManager.OpenScene(ScenePath);
             Verify(scene);
             RenderPreviews();
+            var level = scene.GetRootGameObjects().Single(root => root.name == LevelName);
+            if (level.transform.Find("Conifer woods and cliff outcrops/" + GrassCoverName) != null)
+                RenderGrassPreviews(GrassPreviewPath + "/After");
         });
     }
 
@@ -93,6 +96,7 @@ internal sealed partial class CabinLevelBuilder
         BuildLighting(Group("Fog, sky and lighting", level));
         BuildPlayer(Group("First-person exploration", level));
         ApplyNightChanges(level);
+        AddGrassCover(level);
         blockmesh.transform.SetAsLastSibling();
 
         Verify(scene);
